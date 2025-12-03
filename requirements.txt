@@ -1,0 +1,9 @@
+ultralytics
+opencv-python
+av
+numpy
+lapx
+tensorrt
+onnx
+onnxsim
+pygobject
