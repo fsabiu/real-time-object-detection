@@ -3,6 +3,13 @@ import logging
 import subprocess
 import time
 import json
+import os
+
+# Add system GStreamer plugins to plugin path for rtspclientsink
+system_gst_plugins = '/usr/lib/x86_64-linux-gnu/gstreamer-1.0'
+current_path = os.environ.get('GST_PLUGIN_PATH', '')
+if system_gst_plugins not in current_path:
+    os.environ['GST_PLUGIN_PATH'] = f"{system_gst_plugins}:{current_path}" if current_path else system_gst_plugins
 
 logger = logging.getLogger("SRTYOLOUnified.RTSP")
 
@@ -31,13 +38,6 @@ class RTSPWriter:
 
 class BasicRTSPWriter(RTSPWriter):
     def __init__(self, output_rtsp, width, height, fps):
-        import os
-        # Add system GStreamer plugins to plugin path for rtspclientsink
-        system_gst_plugins = '/usr/lib/x86_64-linux-gnu/gstreamer-1.0'
-        current_path = os.environ.get('GST_PLUGIN_PATH', '')
-        if system_gst_plugins not in current_path:
-            os.environ['GST_PLUGIN_PATH'] = f"{system_gst_plugins}:{current_path}" if current_path else system_gst_plugins
-        
         self.output_rtsp = output_rtsp
         self.width = width
         self.height = height
@@ -163,19 +163,6 @@ class ID3RTSPWriter(RTSPWriter):
         
     def _create_pipeline(self):
         Gst = self.Gst
-        # Start ffmpeg process to push to MediaMTX via RTSP
-        self.ffmpeg_process = subprocess.Popen([
-            'ffmpeg',
-            '-f', 'mpegts',
-            '-i', 'pipe:0',
-            '-c:v', 'copy',
-            '-metadata', 'title=YOLO Detection Stream',
-            '-metadata', 'comment=Contains detection and telemetry metadata',
-            '-f', 'rtsp',
-            '-rtsp_transport', 'tcp',
-            self.output_rtsp
-        ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
         pipeline = Gst.Pipeline.new("id3-pipeline")
 
         appsrc = Gst.ElementFactory.make("appsrc", "source")
@@ -187,6 +174,12 @@ class ID3RTSPWriter(RTSPWriter):
         appsrc.set_property("caps", caps)
 
         videoconvert = Gst.ElementFactory.make("videoconvert", "convert")
+        
+        # Force YUV420P for compatibility
+        capsfilter = Gst.ElementFactory.make("capsfilter", "capsfilter")
+        caps = Gst.Caps.from_string("video/x-raw,format=I420")
+        capsfilter.set_property("caps", caps)
+        
         videoscale = Gst.ElementFactory.make("videoscale", "scale")
         
         input_queue = Gst.ElementFactory.make("queue", "input_queue")
@@ -202,6 +195,8 @@ class ID3RTSPWriter(RTSPWriter):
         x264enc.set_property("bitrate", 6000)
         x264enc.set_property("key-int-max", 60)
         x264enc.set_property("threads", 4)
+        # Tune for low latency but ensure compatibility with mpegtsmux
+        x264enc.set_property("tune", 0x00000004)  # zerolatency
 
         h264parse = Gst.ElementFactory.make("h264parse", "parser")
         
@@ -212,24 +207,30 @@ class ID3RTSPWriter(RTSPWriter):
         mpegtsmux = Gst.ElementFactory.make("mpegtsmux", "mux")
         mpegtsmux.set_property("alignment", 7)
         
-        fdsink = Gst.ElementFactory.make("fdsink", "sink")
-        fdsink.set_property("fd", self.ffmpeg_process.stdin.fileno())
-        fdsink.set_property("sync", False)
+        # Use rtspclientsink instead of fdsink+ffmpeg
+        rtspclientsink = Gst.ElementFactory.make("rtspclientsink", "sink")
+        if not rtspclientsink:
+            raise RuntimeError("rtspclientsink not available - check GST_PLUGIN_PATH")
+        rtspclientsink.set_property("location", self.output_rtsp)
+        rtspclientsink.set_property("protocols", "tcp")
+        rtspclientsink.set_property("latency", 200)
+        # mpegtsmux produces a stream that rtspclientsink can handle (video/mp2t)
 
-        for e in [appsrc, videoconvert, videoscale, input_queue, encoder_queue, x264enc, h264parse, output_queue, mpegtsmux, fdsink]:
+        for e in [appsrc, videoconvert, capsfilter, videoscale, input_queue, encoder_queue, x264enc, h264parse, output_queue, mpegtsmux, rtspclientsink]:
             if not e:
-                raise RuntimeError("Failed to create GStreamer element")
+                raise RuntimeError(f"Failed to create GStreamer element: {e}")
             pipeline.add(e)
 
         appsrc.link(videoconvert)
-        videoconvert.link(videoscale)
+        videoconvert.link(capsfilter)
+        capsfilter.link(videoscale)
         videoscale.link(input_queue)
         input_queue.link(encoder_queue)
         encoder_queue.link(x264enc)
         x264enc.link(h264parse)
         h264parse.link(output_queue)
         output_queue.link(mpegtsmux)
-        mpegtsmux.link(fdsink)
+        mpegtsmux.link(rtspclientsink)
 
         pipeline.set_state(self.Gst.State.PLAYING)
 
@@ -241,6 +242,20 @@ class ID3RTSPWriter(RTSPWriter):
         logger.info("ID3 pipeline started")
 
     def write_frame(self, frame):
+        # Check for bus messages
+        bus = self.pipeline.get_bus()
+        while True:
+            msg = bus.pop()
+            if not msg:
+                break
+            t = msg.type
+            if t == self.Gst.MessageType.ERROR:
+                err, debug = msg.parse_error()
+                logger.error(f"GStreamer Pipeline Error: {err}: {debug}")
+            elif t == self.Gst.MessageType.WARNING:
+                err, debug = msg.parse_warning()
+                logger.warning(f"GStreamer Pipeline Warning: {err}: {debug}")
+
         self.frame_count += 1
         data = frame.tobytes()
         buf = self.Gst.Buffer.new_allocate(None, len(data), None)
@@ -271,8 +286,21 @@ class ID3RTSPWriter(RTSPWriter):
                 taglist.add_value(self.Gst.TagMergeMode.APPEND, 'comment', f"Detections: {metadata['detection_count']}")
             taglist.add_value(self.Gst.TagMergeMode.APPEND, 'extended-comment', json.dumps(metadata, separators=(',', ':')))
             event = self.Gst.Event.new_tag(taglist)
-            # Send tag event to mpegtsmux for inline metadata
-            self.mpegtsmux.send_event(event)
+            # Send tag event to mpegtsmux sink pad (where video comes in)
+            # This ensures tags are associated with the stream
+            sink_pad = self.mpegtsmux.get_static_pad("sink_0")
+            if not sink_pad:
+                 # Try to find the pad linked to output_queue
+                 sink_pad = self.mpegtsmux.iterate_sink_pads().next()[1]
+            
+            if sink_pad:
+                ret = sink_pad.send_event(event)
+                if not ret:
+                    logger.warning("Failed to send ID3 tag event to sink pad")
+            else:
+                ret = self.mpegtsmux.send_event(event)
+                if not ret:
+                    logger.warning("Failed to send ID3 tag event to mpegtsmux")
         except Exception as e:
             logger.error(f"Error injecting MPEG-TS metadata: {e}")
 
@@ -286,12 +314,5 @@ class ID3RTSPWriter(RTSPWriter):
             try:
                 time.sleep(0.3)
                 self.pipeline.set_state(self.Gst.State.NULL)
-            except Exception:
-                pass
-        if hasattr(self, 'ffmpeg_process') and self.ffmpeg_process:
-            try:
-                self.ffmpeg_process.stdin.close()
-                self.ffmpeg_process.terminate()
-                self.ffmpeg_process.wait(timeout=5)
             except Exception:
                 pass

@@ -7,6 +7,9 @@ echo "Step 1: Starting FFmpeg stream (Terminal 1)"
 echo "This will stream cala_del_moral.ts to rtsp://localhost:8554/klvstream"
 echo ""
 
+# Start ffmpeg # Ensure we are in the project root
+cd "$(dirname "$0")/.."
+
 # Start ffmpeg in background (use conda environment ffmpeg)
 /home/ubuntu/miniforge/envs/drone_detector/bin/ffmpeg -stream_loop -1 -re -i /home/ubuntu/drones/cala_del_moral.ts -c copy -f rtsp rtsp://localhost:8554/klvstream &
 FFMPEG_PID=$!
@@ -26,7 +29,8 @@ cd /home/ubuntu/drones/detector
   --input-srt 'rtsp://localhost:8554/klvstream' \
   --output-rtsp 'rtsp://localhost:8554/detected_stream' \
   --model yolov8n.pt \
-  --mode basic
+  --id3-interval 10 \
+  --mode id3
 
 # Cleanup on exit
 echo ""
