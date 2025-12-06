@@ -13,6 +13,7 @@ from ..modules.klv import KLVDecoder
 from ..modules.geo import calculate_object_coordinates
 from ..modules.drawing import draw_detections_vectorized, overlay_metadata
 from ..outputs.rtsp import BasicRTSPWriter, ID3RTSPWriter, _try_import_gi
+from ..outputs.hls import HLSWriter
 
 logger = logging.getLogger("SRTYOLOUnified.Pipeline")
 
@@ -40,10 +41,11 @@ class ThreadedPipeline:
                  metadata_host=None, metadata_port=5555,
                  sse_broadcaster=None, id3_interval=30,
                  detections_dir=None, detection_log_interval=5.0, save_detection_images=True,
-                 tak_sender=None, mode='auto'):
+                 tak_sender=None, mode='auto', output_format='rtsp'):
         
         self.input_srt = input_srt
         self.output_rtsp = output_rtsp
+        self.output_format = output_format
         self.model_path = model_path
         self.conf_threshold = conf_threshold
         self.device = device
@@ -296,7 +298,12 @@ class ThreadedPipeline:
         if self.writer:
             return
         
-        logger.info(f"Initializing writer: {width}x{height} @ {fps}fps")
+        logger.info(f"Initializing writer: {width}x{height} @ {fps}fps (Format: {self.output_format})")
+        
+        if self.output_format == 'hls':
+            self.writer = HLSWriter(self.output_rtsp, width, height, fps, self.id3_interval)
+            return
+
         if self.mode == 'id3':
             self.writer = ID3RTSPWriter(self.output_rtsp, width, height, fps, self.id3_interval)
         elif self.mode == 'basic':

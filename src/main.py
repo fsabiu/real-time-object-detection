@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description='SRT → YOLO → RTSP/HLS with optional ID3 and SSE metadata', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--input-srt', type=str, required=True, help='Input SRT URL (e.g., srt://host:port)')
     parser.add_argument('--output-rtsp', type=str, default='rtsp://localhost:8554/detected_stream', help='Output RTSP URL (MediaMTX will convert to HLS)')
+    parser.add_argument('--output-format', type=str, default='rtsp', choices=['rtsp', 'hls'], help='Output format: rtsp (stream) or hls (files)')
     parser.add_argument('--model', type=str, default='yolov8n.pt', help='Path to YOLO model')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
     parser.add_argument('--device', type=str, default='auto', help='Device to run inference on (auto, cpu, 0, 1, …)')
@@ -81,7 +82,7 @@ def main():
     try:
         pipeline = ThreadedPipeline(
             input_srt=args.input_srt,
-            output_rtsp=args.output_rtsp,
+            output_rtsp=args.output_rtsp, # Used as output_dir for HLS
             model_path=args.model,
             conf_threshold=args.conf,
             device=args.device,
@@ -98,7 +99,8 @@ def main():
             detection_log_interval=args.detection_log_interval,
             save_detection_images=args.save_detection_images,
             tak_sender=tak_sender,
-            mode=args.mode
+            mode=args.mode,
+            output_format=args.output_format
         )
         pipeline.run()
     except Exception as e:

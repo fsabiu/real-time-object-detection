@@ -202,11 +202,23 @@ print('rtspclientsink:', Gst.ElementFactory.make('rtspclientsink'))
 
 ### Arguments
 -   `--input-srt`: Input SRT URL or RTSP URL.
--   `--output-rtsp`: Output RTSP URL.
+-   `--output-rtsp`: Output RTSP URL (for `rtsp` format) or Output Directory (for `hls` format).
+-   `--output-format`: Output format: `rtsp` (default) or `hls`.
 -   `--model`: Path to YOLO model.
 -   `--conf`: Confidence threshold (default: 0.25).
 -   `--device`: Device to run inference on (auto, cpu, 0, 1...).
 -   `--mode`: Pipeline mode (`auto`, `id3`, `basic`). Use `basic` if pygobject is not installed.
+
+### HLS Output Mode
+To generate HLS segments directly (bypassing MediaMTX):
+```bash
+python3 -m src.main \
+  --input-srt 'rtsp://localhost:8554/klvstream' \
+  --output-rtsp '/path/to/hls_output_dir' \
+  --output-format hls \
+  --mode id3
+```
+This will create `index.m3u8` and `.ts` segments in the specified directory, with ID3 tags injected.
 
 ## Architecture
 
