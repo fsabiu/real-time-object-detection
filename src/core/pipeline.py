@@ -17,6 +17,7 @@ from ..outputs.rtsp import BasicRTSPWriter, ID3RTSPWriter, _try_import_gi
 from src.outputs.hls import HLSWriter
 from src.outputs.webrtc import WebRTCWriter, WEBRTC_AVAILABLE
 from src.outputs.mjpeg import MJPEGWriter, MJPEG_AVAILABLE
+from src.outputs.batch import BatchVideoWriter
 
 logger = logging.getLogger("SRTYOLOUnified.Pipeline")
 
@@ -46,7 +47,8 @@ class ThreadedPipeline:
                  detections_dir=None, detection_log_interval=5.0, save_detection_images=True,
                  tak_sender=None, mode='auto', output_format='rtsp',
                  output_webrtc: Optional[int] = None,
-                 output_mjpeg: Optional[int] = None):
+                 output_mjpeg: Optional[int] = None,
+                 batch_output: Optional[str] = None):
         
         self.input_srt = input_srt
         self.output_rtsp = output_rtsp
@@ -70,6 +72,7 @@ class ThreadedPipeline:
         self.mode = mode
         self.output_webrtc = output_webrtc
         self.output_mjpeg = output_mjpeg
+        self.batch_output = batch_output
         self.running = False
         self.stop_event = threading.Event()
         
@@ -104,10 +107,23 @@ class ThreadedPipeline:
         # self.model(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
 
     def _open_srt(self):
-        logger.info(f"Opening SRT stream: {self.input_srt}")
+        """Open the SRT/RTSP stream or file."""
+        import av
+        
+        logger.info(f"Opening input: {self.input_srt}")
+        
+        # Check if input is a file path (for batch processing)
+        import os
+        if os.path.isfile(self.input_srt):
+            logger.info(f"Detected file input: {self.input_srt}")
+            self.container = av.open(self.input_srt)
+            return
+        
+        # Otherwise treat as stream URL
         options = {
-            'latency': str(self.srt_latency * 1000),
-            'recv_buffer_size': '8388608',
+            'analyzeduration': '10000000',
+            'probesize': '10000000',
+            'sync': 'ext',
         }
         self.container = av.open(self.input_srt, options=options)
 
@@ -126,7 +142,12 @@ class ThreadedPipeline:
             # Initialize writer in the capture thread (or main thread) once we know dims
             self.frame_width = video_stream.width
             self.frame_height = video_stream.height
-            self.frame_fps = float(video_stream.average_rate) if video_stream.average_rate else 30.0
+            
+            # Get FPS - round to nearest integer as cv2.VideoWriter doesn't handle decimals well
+            detected_fps = float(video_stream.average_rate) if video_stream.average_rate else 30.0
+            self.frame_fps = round(detected_fps)  # Round 29.97 → 30, 25.00 → 25, etc.
+            
+            logger.info(f"Detected stream: {self.frame_width}x{self.frame_height} @ {detected_fps:.2f} fps (using {self.frame_fps} fps for output)")
             
             # Signal that we are ready to initialize writer
             self._init_writer()
@@ -152,18 +173,32 @@ class ThreadedPipeline:
                             if self.skip_frames > 0 and self.frame_count % (self.skip_frames + 1) != 1:
                                 continue
 
+                            # Convert to format needed for inference
                             img = frame.to_ndarray(format='bgr24')
-                            frame_data = FrameData(img, time.time(), self.latest_klv.copy(), self.frame_count)
                             
-                            # Leaky put
-                            try:
-                                self.inference_queue.put_nowait(frame_data)
-                            except queue.Full:
-                                try:
-                                    self.inference_queue.get_nowait() # Drop old
-                                    self.inference_queue.put_nowait(frame_data)
-                                except:
-                                    pass
+                            # Create packet
+                            frame_data = FrameData(
+                                frame=img,
+                                frame_count=self.frame_count,
+                                timestamp=float(frame.pts * frame.time_base) if frame.pts else time.time(),
+                                klv_data=self.latest_klv.copy()
+                            )
+                            frame_data.timings['capture_start'] = time.time()
+
+                            # If batch mode, BLOCK until space is available - NEVER drop frames
+                            if self.batch_output:
+                                self.inference_queue.put(frame_data)
+                            else:
+                                # Real-time mode: drop old frames if queue is full
+                                if self.inference_queue.full():
+                                    try:
+                                        self.inference_queue.get_nowait()
+                                    except:
+                                        pass
+                                self.inference_queue.put(frame_data)
+                                
+                            # Rate limiting for real-time playback simulation (optional)
+                            # time.sleep(1/self.frame_fps)
                     except Exception as e:
                         # logger.warning(f"Decode error: {e}")
                         pass
@@ -305,7 +340,18 @@ class ThreadedPipeline:
         if self.writer:
             return
         
-        # Priority: MJPEG > WebRTC > HLS > RTSP
+        # Priority: Batch > MJPEG > WebRTC > HLS > RTSP
+        if self.batch_output:
+            logger.info(f"Initializing batch processing mode: {self.batch_output}")
+            self.writer = BatchVideoWriter(
+                output_dir=self.batch_output,
+                width=self.frame_width,
+                height=self.frame_height,
+                fps=self.frame_fps,
+                input_filename=self.input_srt  # Pass input filename for output naming
+            )
+            return
+        
         if self.output_mjpeg:
             if not MJPEG_AVAILABLE:
                 logger.error("MJPEG output requested but aiohttp not available")

@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--save-detection-images', action='store_true', help='Save cropped images of detected objects')
     parser.add_argument('--output-webrtc', type=int, default=None, help='Start WebRTC signaling server on this port (e.g., 8080)')
     parser.add_argument('--output-mjpeg', type=int, default=None, help='Start MJPEG+SSE server on this port (e.g., 8080)')
+    parser.add_argument('--batch-output', type=str, default=None, help='Batch mode: output directory for annotated video + JSON metadata')
     
     # TAK Server arguments
     parser.add_argument('--tak-enable', action='store_true', help='Enable TAK Server CoT message sending')
@@ -104,7 +105,8 @@ def main():
             mode=args.mode,
             output_format=args.output_format,
             output_webrtc=args.output_webrtc,
-            output_mjpeg=args.output_mjpeg
+            output_mjpeg=args.output_mjpeg,
+            batch_output=args.batch_output
         )
         pipeline.run()
     except Exception as e:

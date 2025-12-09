@@ -104,27 +104,147 @@ MediaMTX listens on:
 
 ### Basic Mode (Recommended)
 
-Uses pure GStreamer pipeline (appsrc -> x264enc -> rtspclientsink):
+Uses pure GStreamer pipeline (appsrc ->
+### 2. Batch Processing Mode
+Process video file and save annotated video + JSON metadata:
+```bash
+python3 -m src.main \
+  --input-srt ../cala_del_moral.ts \
+  --batch-output ./output \
+  --model models/yolov8n.pt
+  --conf 0.25
+```
+
+Output files are named after the input file (e.g., `cala_del_moral.mp4`, `cala_del_moral.json`).
+
+---
+
+## Usage Guide
+
+### Mode 1: RTSP Streaming (Real-Time)
+
+Stream annotated video with detections in real-time.
+
+#### Example 1: Stream from File
+
+**Terminal 1 - Stream video file**:
+```bash
+ffmpeg -re -stream_loop -1 \
+  -i ../cala_del_moral.ts \
+  -c copy \
+  -f rtsp rtsp://127.0.0.1:8554/source
+```
+
+**Terminal 2 - Run detector**:
+```bash
+python3 -m src.main \
+  --input-srt rtsp://127.0.0.1:8554/source \
+  --output-rtsp rtsp://127.0.0.1:8554/detected \
+  --model models/yolov8n.pt \
+  --conf 0.25
+```
+
+**Terminal 3 - View output**:
+```bash
+ffplay rtsp://127.0.0.1:8554/detected
+```
+
+#### Example 2: Stream from Parrot Forwarder (Real-Time)
 
 ```bash
 python3 -m src.main \
-  --input-srt 'srt://127.0.0.1:8890?mode=caller' \
-  --output-rtsp 'rtsp://localhost:8554/detected_stream' \
-  --model yolov8n.pt \
-  --mode basic
+  --input-srt srt://parrot-forwarder-ip:8900 \
+  --output-rtsp rtsp://127.0.0.1:8554/detected \
+  --model models/yolov8n.pt \
+  --conf 0.3 \
+  --skip-frames 2
 ```
 
-### Testing with Recorded Stream
+**Features**:
+- Annotated video stream with bounding boxes
+- Class labels and confidence scores displayed
+- Low latency (<100ms typical)
+- Compatible with MediaMTX for HLS conversion
+
+---
+
+### Mode 2: Batch Processing
+
+Process a video file and save annotated output + complete metadata.
+
+#### Example: Process Video File Directly
 
 ```bash
-chmod +x test_detector.sh
-./test_detector.sh
+python3 -m src.main \
+  --input-srt ../cala_del_moral.ts \
+  --batch-output ./batch_output \
+  --model models/yolov8n.pt \
+  --conf 0.25
 ```
 
-This script:
-1. Streams `cala_del_moral.ts` to MediaMTX via ffmpeg
-2. Runs the detector
-3. Outputs detected stream to `rtsp://localhost:8554/detected_stream`
+**Output Files** (named after input file):
+```
+batch_output/
+├── cala_del_moral.mp4     # Annotated video
+└── cala_del_moral.json    # Frame metadata
+```
+
+**Key Features**:
+- Output files named after input to prevent overwriting
+- Preserves original FPS (no speed-up or slow-down)
+- Complete frame-by-frame metadata in JSON
+
+**JSON Metadata Structure**:
+```json
+{
+  "video_info": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30.0,
+    "output_file": "output.mp4"
+  },
+  "frames": [
+    {
+      "frame": 0,
+      "timestamp": "2025-12-09T10:00:00",
+      "detection_count": 3,
+      "detections": [
+        {
+          "class_name": "person",
+          "confidence": 0.95,
+          "bbox": [100, 200, 300, 400],
+          "track_id": 1
+        }
+      ],
+      "telemetry": {
+        "lat": 37.7749,
+        "lon": -122.4194,
+        "alt": 50.5
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Test Scripts
+
+### Test RTSP Streaming
+```bash
+./tests/test_rtsp_streaming.sh
+```
+Streams `cala_del_moral.ts` and outputs to RTSP.
+
+### Test Batch Processing
+```bash
+./tests/test_batch_processing.sh
+```
+Processes `cala_del_moral.ts` and saves to `batch_output_test/`.
+
+---
+
+## Installationam to `rtsp://localhost:8554/detected_stream`
 
 ### Viewing the Output
 
