@@ -203,7 +203,8 @@ class ThreadedPipeline:
                         # logger.warning(f"Decode error: {e}")
                         pass
         except Exception as e:
-            logger.error(f"Capture thread error: {e}")
+            if not self.stop_event.is_set():
+                logger.error(f"Capture thread error: {e}")
             self.stop_event.set()
 
     def _inference_thread(self):
