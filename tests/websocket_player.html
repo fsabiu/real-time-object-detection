@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Drone Detector - WebSocket Stream</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        h1 {
+            text-align: center;
+            color: #00d9ff;
+            margin-bottom: 20px;
+            text-shadow: 0 0 20px rgba(0, 217, 255, 0.5);
+        }
+
+        #main-content {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        #canvas-container {
+            flex: 2;
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+        }
+
+        canvas {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        #connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: bold;
+            z-index: 100;
+        }
+
+        #connection-status.connected {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #connection-status.disconnected {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border: 1px solid #ff6b6b;
+        }
+
+        #fps-counter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #00ff88;
+            font-family: monospace;
+        }
+
+        #telemetry-panel {
+            flex: 1;
+            background: rgba(30, 30, 46, 0.95);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            min-width: 320px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        h2 {
+            margin: 0 0 10px 0;
+            color: #00d9ff;
+            border-bottom: 2px solid rgba(0, 217, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        .metric-group {
+            background: rgba(40, 40, 60, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 3px solid #00d9ff;
+        }
+
+        .metric-label {
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            font-size: 1.1em;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .highlight {
+            color: #00ff88;
+        }
+
+        #detections-list {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .detection-item {
+            background: rgba(50, 50, 70, 0.8);
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 3px solid #ff6b6b;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="connection-status" class="disconnected">● Disconnected</div>
+    <h1>🚁 Drone Detector - WebSocket Stream</h1>
+
+    <div id="main-content">
+        <div id="canvas-container">
+            <canvas id="canvas" width="640" height="480"></canvas>
+            <div id="fps-counter">FPS: --</div>
+        </div>
+
+        <div id="telemetry-panel">
+            <h2>📡 Real-Time Telemetry</h2>
+            <div class="metric-group">
+                <div class="metric-label">Frame</div>
+                <div class="metric-value" id="val-frame">---</div>
+            </div>
+            <div class="metric-group">
+                <div class="metric-label">Objects</div>
+                <div class="metric-value highlight" id="val-count">0</div>
+            </div>
+            <div id="detections-list">
+                <div class="metric-label">Active Detections</div>
+                <div id="list-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusEl = document.getElementById('connection-status');
+        const fpsEl = document.getElementById('fps-counter');
+        const elFrame = document.getElementById('val-frame');
+        const elCount = document.getElementById('val-count');
+        const elList = document.getElementById('list-container');
+
+        let ws = null;
+        let frameCount = 0;
+        let lastFpsUpdate = Date.now();
+        let currentMetadata = null;
+
+        // FPS counter
+        setInterval(() => {
+            const now = Date.now();
+            const elapsed = (now - lastFpsUpdate) / 1000;
+            const fps = Math.round(frameCount / elapsed);
+            fpsEl.textContent = `FPS: ${fps}`;
+            frameCount = 0;
+            lastFpsUpdate = now;
+        }, 1000);
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                statusEl.className = 'connected';
+                statusEl.textContent = '● Connected';
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+
+                    if (msg.type === 'frame') {
+                        // Decode and draw frame
+                        const img = new Image();
+                        img.onload = () => {
+                            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                            // Draw bounding boxes if we have metadata
+                            if (currentMetadata && currentMetadata.detections) {
+                                drawDetections(currentMetadata.detections);
+                            }
+
+                            frameCount++;
+                        };
+                        img.src = 'data:image/jpeg;base64,' + msg.data;
+                    } else if (msg.type === 'metadata') {
+                        currentMetadata = msg.data;
+                        updateTelemetry(msg.data);
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                statusEl.className = 'disconnected';
+                statusEl.textContent = '● Disconnected';
+
+                // Reconnect after 2 seconds
+                setTimeout(connect, 2000);
+            };
+        }
+
+        function drawDetections(detections) {
+            if (!detections || detections.length === 0) return;
+
+            detections.forEach(det => {
+                if (!det.bbox) return;
+
+                const [x1, y1, x2, y2] = det.bbox;
+
+                // Scale coordinates to canvas size
+                const scaleX = canvas.width / 640;
+                const scaleY = canvas.height / 480;
+
+                const sx1 = x1 * scaleX;
+                const sy1 = y1 * scaleY;
+                const sx2 = x2 * scaleX;
+                const sy2 = y2 * scaleY;
+
+                // Draw bounding box
+                ctx.strokeStyle = '#00ff88';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+
+                // Draw label
+                const label = `${det.class_name} ${(det.confidence * 100).toFixed(0)}%`;
+                ctx.fillStyle = 'rgba(0, 255, 136, 0.8)';
+                ctx.fillRect(sx1, sy1 - 20, ctx.measureText(label).width + 10, 20);
+                ctx.fillStyle = '#000';
+                ctx.font = '12px monospace';
+                ctx.fillText(label, sx1 + 5, sy1 - 6);
+            });
+        }
+
+        function updateTelemetry(data) {
+            elFrame.textContent = data.frame || 'N/A';
+            elCount.textContent = data.detection_count || 0;
+
+            // Update detections list
+            elList.innerHTML = '';
+            if (data.detections && data.detections.length > 0) {
+                data.detections.slice(0, 10).forEach(det => {
+                    const div = document.createElement('div');
+                    div.className = 'detection-item';
+                    div.innerHTML = `<strong>${det.class_name}</strong> ${(det.confidence * 100).toFixed(0)}%`;
+                    elList.appendChild(div);
+                });
+            } else {
+                elList.innerHTML = '<div style="color:#666; font-style:italic;">No detections</div>';
+            }
+        }
+
+        // Connect on load
+        connect();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Drone Detector WebRTC + Metadata Stream</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        h1 {
+            text-align: center;
+            color: #00d9ff;
+            margin-bottom: 20px;
+            text-shadow: 0 0 20px rgba(0, 217, 255, 0.5);
+        }
+
+        #main-content {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        #video-container {
+            flex: 2;
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            min-height: 400px;
+        }
+
+        #connection-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 10;
+        }
+
+        #connection-overlay.hidden {
+            display: none;
+        }
+
+        #connect-btn {
+            padding: 15px 40px;
+            font-size: 1.2em;
+            background: linear-gradient(135deg, #00d9ff 0%, #0099cc 100%);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 217, 255, 0.4);
+        }
+
+        #connect-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 217, 255, 0.6);
+        }
+
+        #connect-btn:disabled {
+            background: #555;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-size: 0.9em;
+            color: #888;
+        }
+
+        #telemetry-panel {
+            flex: 1;
+            background: rgba(30, 30, 46, 0.95);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            min-width: 320px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        h2 {
+            margin: 0 0 10px 0;
+            color: #00d9ff;
+            border-bottom: 2px solid rgba(0, 217, 255, 0.3);
+            padding-bottom: 10px;
+            font-size: 1.3em;
+        }
+
+        .metric-group {
+            background: rgba(40, 40, 60, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 3px solid #00d9ff;
+        }
+
+        .metric-label {
+            font-size: 0.8em;
+            color: #888;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .metric-value {
+            font-size: 1.1em;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .highlight {
+            color: #00ff88;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        #detections-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 10px;
+        }
+
+        .detection-item {
+            background: rgba(50, 50, 70, 0.8);
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 3px solid #ff6b6b;
+            font-size: 0.9em;
+            transition: all 0.2s ease;
+        }
+
+        .detection-item:hover {
+            background: rgba(60, 60, 80, 0.9);
+            transform: translateX(3px);
+        }
+
+        .detection-class {
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .detection-conf {
+            color: #00ff88;
+            margin-left: 8px;
+        }
+
+        .detection-coords {
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        #connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: bold;
+            z-index: 100;
+        }
+
+        #connection-status.connected {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #connection-status.disconnected {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border: 1px solid #ff6b6b;
+        }
+
+        #connection-status.connecting {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+            border: 1px solid #ffc107;
+        }
+
+        #fps-counter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #00ff88;
+            font-family: monospace;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="connection-status" class="disconnected">● Disconnected</div>
+
+    <h1>🚁 Drone Detector - WebRTC Stream</h1>
+
+    <div id="main-content">
+        <div id="video-container">
+            <video id="video" autoplay muted playsinline></video>
+            <div id="fps-counter">FPS: --</div>
+            <div id="connection-overlay">
+                <button id="connect-btn">Connect to Stream</button>
+                <div id="status">Click to connect to WebRTC stream</div>
+            </div>
+        </div>
+
+        <div id="telemetry-panel">
+            <h2>📡 Real-Time Telemetry</h2>
+
+            <div class="metric-group">
+                <div class="metric-label">Timestamp</div>
+                <div class="metric-value" id="val-timestamp">--:--:--</div>
+            </div>
+
+            <div class="metric-group">
+                <div class="metric-label">Drone Position</div>
+                <div class="metric-value">
+                    Lat: <span id="val-lat">--.------</span><br>
+                    Lon: <span id="val-lon">--.------</span><br>
+                    Alt: <span id="val-alt">---</span> m
+                </div>
+            </div>
+
+            <div class="metric-group">
+                <div class="metric-label">Frame Info</div>
+                <div class="metric-value">
+                    Frame: <span id="val-frame">---</span><br>
+                    Objects: <span id="val-count" class="highlight">0</span>
+                </div>
+            </div>
+
+            <div id="detections-list">
+                <div class="metric-label">Active Detections</div>
+                <div id="list-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const SIGNALING_URL = 'http://localhost:8080/offer';
+
+        // UI Elements
+        const video = document.getElementById('video');
+        const connectBtn = document.getElementById('connect-btn');
+        const statusDiv = document.getElementById('status');
+        const overlay = document.getElementById('connection-overlay');
+        const connectionStatus = document.getElementById('connection-status');
+        const fpsCounter = document.getElementById('fps-counter');
+
+        const elTimestamp = document.getElementById('val-timestamp');
+        const elLat = document.getElementById('val-lat');
+        const elLon = document.getElementById('val-lon');
+        const elAlt = document.getElementById('val-alt');
+        const elFrame = document.getElementById('val-frame');
+        const elCount = document.getElementById('val-count');
+        const elList = document.getElementById('list-container');
+
+        let pc = null;
+        let dataChannel = null;
+        let metadataCount = 0;
+        let lastMetadataTime = Date.now();
+
+        // FPS calculation
+        let frameCount = 0;
+        let lastFpsUpdate = Date.now();
+
+        setInterval(() => {
+            const now = Date.now();
+            const elapsed = (now - lastFpsUpdate) / 1000;
+            const fps = Math.round(frameCount / elapsed);
+            fpsCounter.textContent = `FPS: ${fps} | Metadata: ${metadataCount}`;
+            frameCount = 0;
+            lastFpsUpdate = now;
+        }, 1000);
+
+        connectBtn.addEventListener('click', connect);
+
+        async function connect() {
+            connectBtn.disabled = true;
+            statusDiv.textContent = 'Connecting...';
+            setConnectionStatus('connecting');
+
+            try {
+                // For localhost connections, use host candidates only (no STUN)
+                pc = new RTCPeerConnection({
+                    iceServers: []  // Empty = host candidates only
+                });
+
+                pc.onconnectionstatechange = () => {
+                    console.log('Connection state:', pc.connectionState);
+                    if (pc.connectionState === 'connected') {
+                        setConnectionStatus('connected');
+                        overlay.classList.add('hidden');
+                    } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                        setConnectionStatus('disconnected');
+                        overlay.classList.remove('hidden');
+                        connectBtn.disabled = false;
+                        statusDiv.textContent = 'Connection lost. Click to reconnect.';
+                    }
+                };
+
+                pc.ontrack = (event) => {
+                    console.log('Received track:', event.track.kind);
+                    if (event.track.kind === 'video') {
+                        video.srcObject = event.streams[0];
+                        video.onloadedmetadata = () => {
+                            video.play();
+                        };
+                    }
+                };
+
+                pc.ondatachannel = (event) => {
+                    console.log('Data channel received:', event.channel.label);
+                    setupDataChannel(event.channel);
+                };
+
+                // Add transceiver for receiving video
+                pc.addTransceiver('video', { direction: 'recvonly' });
+
+                // Create and send offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                statusDiv.textContent = 'Sending offer to server...';
+
+                const response = await fetch(SIGNALING_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                const answer = await response.json();
+
+                if (answer.error) {
+                    throw new Error(answer.error);
+                }
+
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                statusDiv.textContent = 'Connected! Waiting for stream...';
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                setConnectionStatus('disconnected');
+                connectBtn.disabled = false;
+            }
+        }
+
+        function setupDataChannel(channel) {
+            dataChannel = channel;
+            console.log('Setting up data channel:', channel.label);
+
+            channel.onopen = () => {
+                console.log('Data channel opened');
+            };
+
+            channel.onmessage = (event) => {
+                try {
+                    const metadata = JSON.parse(event.data);
+                    metadataCount++;
+                    frameCount++;
+                    updateTelemetry(metadata);
+                } catch (e) {
+                    console.error('Error parsing metadata:', e);
+                }
+            };
+
+            channel.onclose = () => {
+                console.log('Data channel closed');
+            };
+        }
+
+        function updateTelemetry(data) {
+            // Timestamp
+            if (data.timestamp) {
+                const date = new Date(data.timestamp);
+                elTimestamp.textContent = date.toLocaleTimeString() + '.' +
+                    String(date.getMilliseconds()).padStart(3, '0');
+            }
+
+            // Frame Info
+            elFrame.textContent = data.frame || 'N/A';
+            elCount.textContent = data.detection_count || 0;
+
+            // Telemetry (KLV data)
+            if (data.telemetry) {
+                const lat = data.telemetry.lat || data.telemetry.latitude || 0;
+                const lon = data.telemetry.lon || data.telemetry.longitude || 0;
+                const alt = data.telemetry.alt || data.telemetry.altitude || 0;
+                elLat.textContent = lat.toFixed(6);
+                elLon.textContent = lon.toFixed(6);
+                elAlt.textContent = alt.toFixed(1);
+            }
+
+            // Detections List
+            elList.innerHTML = '';
+            if (data.detections && data.detections.length > 0) {
+                data.detections.slice(0, 10).forEach((det) => {
+                    const div = document.createElement('div');
+                    div.className = 'detection-item';
+
+                    let html = `<span class="detection-class">${det.class_name}</span>`;
+                    html += `<span class="detection-conf">${(det.confidence * 100).toFixed(0)}%</span>`;
+
+                    if (det.track_id) {
+                        html += ` <span style="color:#888">#${det.track_id}</span>`;
+                    }
+
+                    if (det.geo_coordinates) {
+                        html += `<div class="detection-coords">📍 ${det.geo_coordinates.lat.toFixed(6)}, ${det.geo_coordinates.lon.toFixed(6)}</div>`;
+                    }
+
+                    div.innerHTML = html;
+                    elList.appendChild(div);
+                });
+            } else {
+                elList.innerHTML = '<div style="color:#666; font-style:italic;">No detections</div>';
+            }
+        }
+
+        function setConnectionStatus(status) {
+            connectionStatus.className = status;
+            switch (status) {
+                case 'connected':
+                    connectionStatus.textContent = '● Connected';
+                    break;
+                case 'connecting':
+                    connectionStatus.textContent = '● Connecting...';
+                    break;
+                case 'disconnected':
+                    connectionStatus.textContent = '● Disconnected';
+                    break;
+            }
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (pc) {
+                pc.close();
+            }
+        });
+    </script>
+</body>
+
+</html>

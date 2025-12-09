@@ -6,160 +6,334 @@
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <style>
         body {
-            font-family: sans-serif;
-            background: #1a1a1a;
-            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
             display: flex;
-            flex-direction: column;
-            align-items: center;
+            flex-direction: row;
+            justify-content: center;
+            height: 100vh;
+            box-sizing: border-box;
         }
 
-        #container {
+        #main-content {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            max-width: 1600px;
+            width: 100%;
+        }
+
+        #video-container {
+            flex: 2;
             position: relative;
-            width: 1280px;
-            height: 720px;
-            border: 2px solid #333;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
         }
 
         video {
             width: 100%;
             height: 100%;
+            object-fit: contain;
         }
 
-        #overlay {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 5px;
-            pointer-events: none;
-            font-family: monospace;
-            white-space: pre;
+        #telemetry-panel {
+            flex: 1;
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            min-width: 300px;
         }
 
-        #metadata-log {
-            width: 1280px;
-            height: 200px;
-            overflow-y: scroll;
-            background: #222;
-            border: 1px solid #444;
-            margin-top: 10px;
-            padding: 10px;
-            font-family: monospace;
+        h2 {
+            margin: 0 0 10px 0;
+            color: #4caf50;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
         }
 
-        .log-entry {
-            margin-bottom: 5px;
-            border-bottom: 1px solid #333;
+        .metric-group {
+            background: #252525;
+            padding: 15px;
+            border-radius: 6px;
         }
 
-        .timestamp {
+        .metric-label {
+            font-size: 0.85em;
             color: #888;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        .json-data {
-            color: #0f0;
+        .metric-value {
+            font-size: 1.2em;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .highlight {
+            color: #4caf50;
+        }
+
+        #detections-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            border-top: 1px solid #333;
+            padding-top: 10px;
+        }
+
+        .detection-item {
+            background: #2a2a2a;
+            padding: 8px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            border-left: 3px solid #2196f3;
+            font-size: 0.9em;
         }
     </style>
 </head>
 
 <body>
-    <h1>Drone Detector HLS Stream</h1>
-    <div id="container">
-        <video id="video" controls muted autoplay></video>
-        <div id="overlay">Waiting for metadata...</div>
+    <div id="main-content">
+        <div id="video-container">
+            <video id="video" controls muted autoplay></video>
+        </div>
+
+        <div id="telemetry-panel">
+            <h2>Real-Time Telemetry</h2>
+
+            <div class="metric-group">
+                <div class="metric-label">Timestamp</div>
+                <div class="metric-value" id="val-timestamp">--:--:--</div>
+            </div>
+
+            <div class="metric-group">
+                <div class="metric-label">Drone Position</div>
+                <div class="metric-value">
+                    Lat: <span id="val-lat">--.------</span><br>
+                    Lon: <span id="val-lon">--.------</span><br>
+                    Alt: <span id="val-alt">---</span> m
+                </div>
+            </div>
+
+            <div class="metric-group">
+                <div class="metric-label">Frame Info</div>
+                <div class="metric-value">
+                    Frame: <span id="val-frame">---</span><br>
+                    Objects: <span id="val-count" class="highlight">0</span>
+                </div>
+            </div>
+
+            <div id="detections-list">
+                <div class="metric-label">Active Detections</div>
+                <div id="list-container"></div>
+            </div>
+        </div>
     </div>
-    <div id="metadata-log"></div>
 
     <script>
         var video = document.getElementById('video');
-        var overlay = document.getElementById('overlay');
-        var log = document.getElementById('metadata-log');
+
+        // UI Elements
+        var elTimestamp = document.getElementById('val-timestamp');
+        var elLat = document.getElementById('val-lat');
+        var elLon = document.getElementById('val-lon');
+        var elAlt = document.getElementById('val-alt');
+        var elFrame = document.getElementById('val-frame');
+        var elCount = document.getElementById('val-count');
+        var elList = document.getElementById('list-container');
+
+        // Base URL for HLS content
+        const HLS_BASE = 'http://localhost:8001/hls_output';
+        let lastParsedSegment = '';
+
+        // Parse JSON metadata from raw TS segment data
+        function parseMetadataFromSegment(arrayBuffer) {
+            try {
+                const data = new Uint8Array(arrayBuffer);
+                const text = new TextDecoder('utf-8', { fatal: false }).decode(data);
+
+                // Find all complete JSON objects containing "frame"
+                const allMetadata = [];
+                let startIdx = 0;
+
+                while (true) {
+                    const jsonStart = text.indexOf('{"frame":', startIdx);
+                    if (jsonStart === -1) break;
+
+                    // Find the matching closing brace by counting brackets
+                    let depth = 0;
+                    let jsonEnd = -1;
+                    for (let i = jsonStart; i < text.length && i < jsonStart + 10000; i++) {
+                        if (text[i] === '{') depth++;
+                        else if (text[i] === '}') {
+                            depth--;
+                            if (depth === 0) {
+                                jsonEnd = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (jsonEnd > jsonStart) {
+                        try {
+                            const jsonStr = text.substring(jsonStart, jsonEnd + 1);
+                            const metadata = JSON.parse(jsonStr);
+                            if (metadata.frame !== undefined) {
+                                allMetadata.push(metadata);
+                            }
+                        } catch (e) {
+                            // Invalid JSON, continue
+                        }
+                        startIdx = jsonEnd + 1;
+                    } else {
+                        startIdx = jsonStart + 1;
+                    }
+                }
+
+                // Return the most recent metadata
+                if (allMetadata.length > 0) {
+                    return allMetadata[allMetadata.length - 1];
+                }
+            } catch (e) {
+                console.error('Error parsing segment:', e);
+            }
+            return null;
+        }
+
+        // Fetch and parse the latest segment for metadata
+        async function fetchLatestMetadata() {
+            try {
+                // First, get the playlist to find the latest segment
+                const playlistRes = await fetch(HLS_BASE + '/index.m3u8?' + Date.now());
+                if (!playlistRes.ok) {
+                    console.error('Playlist fetch failed:', playlistRes.status);
+                    return;
+                }
+                const playlistText = await playlistRes.text();
+
+                // Find all segment files
+                const segments = playlistText.match(/segment\d+\.ts/g);
+                if (!segments || segments.length === 0) {
+                    console.log('No segments found in playlist');
+                    return;
+                }
+
+                // Get the latest segment (second to last for more reliability)
+                const latestSegment = segments.length > 1 ? segments[segments.length - 2] : segments[0];
+
+                // Only fetch if we haven't parsed this segment yet
+                if (latestSegment === lastParsedSegment) return;
+
+                console.log('Fetching segment:', latestSegment);
+
+                // Fetch the segment
+                const segmentRes = await fetch(HLS_BASE + '/' + latestSegment);
+                if (!segmentRes.ok) {
+                    console.error('Segment fetch failed:', segmentRes.status);
+                    return;
+                }
+                const segmentData = await segmentRes.arrayBuffer();
+                console.log('Segment size:', segmentData.byteLength);
+
+                const metadata = parseMetadataFromSegment(segmentData);
+                if (metadata) {
+                    console.log('Parsed metadata for frame:', metadata.frame);
+                    lastParsedSegment = latestSegment;
+                    updateTelemetry(metadata);
+                } else {
+                    console.log('No metadata found in segment');
+                }
+            } catch (e) {
+                console.error('Error fetching metadata:', e);
+            }
+        }
+
+        // Start metadata polling (every 500ms for near real-time updates)
+        setInterval(fetchLatestMetadata, 500);
 
         if (Hls.isSupported()) {
             var hls = new Hls({
-                debug: true,
+                debug: false,
                 enableWorker: true,
                 lowLatencyMode: true,
             });
 
-            // Connect to direct HLS output served by Python HTTP server
-            hls.loadSource('http://localhost:8001/hls_output/index.m3u8');
+            hls.loadSource(HLS_BASE + '/index.m3u8');
             hls.attachMedia(video);
 
             hls.on(Hls.Events.MANIFEST_PARSED, function () {
                 video.play();
-                logMessage("Manifest parsed, playing...");
             });
 
-            // Listen for ID3 tags
+            // Try standard ID3 metadata parsing (may work if mpegtsmux ever gets ID3 support)
             hls.on(Hls.Events.FRAG_PARSING_METADATA, function (event, data) {
-                // data.samples is an array of metadata samples
                 data.samples.forEach(function (sample) {
-                    // sample.data is a Uint8Array
-                    // Decode it
                     try {
                         var text = new TextDecoder("utf-8").decode(sample.data);
-                        // ID3 tags often have headers/padding. Look for JSON.
                         var jsonStart = text.indexOf('{');
                         var jsonEnd = text.lastIndexOf('}');
 
                         if (jsonStart >= 0 && jsonEnd > jsonStart) {
                             var jsonStr = text.substring(jsonStart, jsonEnd + 1);
                             var metadata = JSON.parse(jsonStr);
-
-                            updateOverlay(metadata);
-                            logMessage("ID3: " + jsonStr, true);
-                        } else {
-                            // Might be raw text or other ID3 frames
-                            logMessage("Raw Metadata: " + text);
+                            updateTelemetry(metadata);
                         }
                     } catch (e) {
-                        console.error("Error parsing metadata:", e);
+                        // Silent fail - custom loader handles this
                     }
                 });
             });
 
-            hls.on(Hls.Events.ERROR, function (event, data) {
-                if (data.fatal) {
-                    switch (data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            console.log("fatal network error encountered, try to recover");
-                            hls.startLoad();
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log("fatal media error encountered, try to recover");
-                            hls.recoverMediaError();
-                            break;
-                        default:
-                            hls.destroy();
-                            break;
-                    }
-                }
-            });
-        } else {
-            logMessage("HLS not supported in this browser!");
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS support (Safari)
+            video.src = HLS_BASE + '/index.m3u8';
         }
 
-        function updateOverlay(data) {
-            var html = "Frame: " + (data.frame || "N/A") + "\n";
-            html += "Detections: " + (data.detection_count || 0) + "\n";
-            if (data.telemetry) {
-                html += "Lat: " + (data.telemetry.latitude || "N/A") + "\n";
-                html += "Lon: " + (data.telemetry.longitude || "N/A") + "\n";
-                html += "Alt: " + (data.telemetry.altitude || "N/A");
+        function updateTelemetry(data) {
+            console.log('Telemetry updated:', data.frame);
+
+            // Timestamp
+            if (data.timestamp) {
+                var date = new Date(data.timestamp);
+                elTimestamp.innerText = date.toLocaleTimeString() + "." + String(date.getMilliseconds()).padStart(3, '0');
             }
-            overlay.innerText = html;
-        }
 
-        function logMessage(msg, isJson) {
-            var div = document.createElement('div');
-            div.className = 'log-entry';
-            var time = new Date().toLocaleTimeString();
-            var content = isJson ? '<span class="json-data">' + msg + '</span>' : msg;
-            div.innerHTML = '<span class="timestamp">[' + time + ']</span> ' + content;
-            log.insertBefore(div, log.firstChild);
+            // Frame Info
+            elFrame.innerText = data.frame || "N/A";
+            elCount.innerText = data.detection_count || 0;
+
+            // Telemetry
+            if (data.telemetry) {
+                elLat.innerText = (data.telemetry.lat || data.telemetry.latitude || 0).toFixed(6);
+                elLon.innerText = (data.telemetry.lon || data.telemetry.longitude || 0).toFixed(6);
+                elAlt.innerText = (data.telemetry.alt || data.telemetry.altitude || 0).toFixed(1);
+            }
+
+            // Detections List
+            elList.innerHTML = '';
+            if (data.detections && data.detections.length > 0) {
+                data.detections.slice(0, 10).forEach(function (det) {
+                    var div = document.createElement('div');
+                    div.className = 'detection-item';
+                    var conf = (det.confidence * 100).toFixed(0);
+                    div.innerText = det.class_name + ' (' + conf + '%)';
+                    if (det.geo_coordinates) {
+                        div.innerText += '\n📍 ' + det.geo_coordinates.lat.toFixed(6) + ', ' + det.geo_coordinates.lon.toFixed(6);
+                    }
+                    elList.appendChild(div);
+                });
+            }
         }
     </script>
 </body>

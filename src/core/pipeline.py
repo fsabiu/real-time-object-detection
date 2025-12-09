@@ -8,12 +8,15 @@ import numpy as np
 from datetime import datetime
 from collections import deque
 from ultralytics import YOLO
+from typing import Optional
 
 from ..modules.klv import KLVDecoder
 from ..modules.geo import calculate_object_coordinates
 from ..modules.drawing import draw_detections_vectorized, overlay_metadata
 from ..outputs.rtsp import BasicRTSPWriter, ID3RTSPWriter, _try_import_gi
-from ..outputs.hls import HLSWriter
+from src.outputs.hls import HLSWriter
+from src.outputs.webrtc import WebRTCWriter, WEBRTC_AVAILABLE
+from src.outputs.mjpeg import MJPEGWriter, MJPEG_AVAILABLE
 
 logger = logging.getLogger("SRTYOLOUnified.Pipeline")
 
@@ -41,7 +44,9 @@ class ThreadedPipeline:
                  metadata_host=None, metadata_port=5555,
                  sse_broadcaster=None, id3_interval=30,
                  detections_dir=None, detection_log_interval=5.0, save_detection_images=True,
-                 tak_sender=None, mode='auto', output_format='rtsp'):
+                 tak_sender=None, mode='auto', output_format='rtsp',
+                 output_webrtc: Optional[int] = None,
+                 output_mjpeg: Optional[int] = None):
         
         self.input_srt = input_srt
         self.output_rtsp = output_rtsp
@@ -63,7 +68,8 @@ class ThreadedPipeline:
         self.save_detection_images = save_detection_images
         self.tak_sender = tak_sender
         self.mode = mode
-
+        self.output_webrtc = output_webrtc
+        self.output_mjpeg = output_mjpeg
         self.running = False
         self.stop_event = threading.Event()
         
@@ -118,12 +124,12 @@ class ThreadedPipeline:
                 raise RuntimeError("No video stream found")
 
             # Initialize writer in the capture thread (or main thread) once we know dims
-            width = video_stream.width
-            height = video_stream.height
-            fps = float(video_stream.average_rate) if video_stream.average_rate else 30.0
+            self.frame_width = video_stream.width
+            self.frame_height = video_stream.height
+            self.frame_fps = float(video_stream.average_rate) if video_stream.average_rate else 30.0
             
             # Signal that we are ready to initialize writer
-            self._init_writer(width, height, fps)
+            self._init_writer()
 
             for packet in self.container.demux():
                 if self.stop_event.is_set():
@@ -294,18 +300,49 @@ class ThreadedPipeline:
             except Exception as e:
                 logger.error(f"Output error: {e}")
 
-    def _init_writer(self, width, height, fps):
+    def _init_writer(self):
+        """Initialize the appropriate output writer based on configuration."""
         if self.writer:
             return
         
-        logger.info(f"Initializing writer: {width}x{height} @ {fps}fps (Format: {self.output_format})")
+        # Priority: MJPEG > WebRTC > HLS > RTSP
+        if self.output_mjpeg:
+            if not MJPEG_AVAILABLE:
+                logger.error("MJPEG output requested but aiohttp not available")
+                raise RuntimeError("Install aiohttp for MJPEG output: pip install aiohttp")
+            
+            logger.info(f"Initializing MJPEG+SSE output on port {self.output_mjpeg}")
+            self.writer = MJPEGWriter(
+                port=self.output_mjpeg,
+                width=self.frame_width,
+                height=self.frame_height,
+                fps=self.frame_fps,
+                quality=85
+            )
+            return
+        
+        if self.output_webrtc:
+            if not WEBRTC_AVAILABLE:
+                logger.error("WebRTC output requested but aiortc/aiohttp not available")
+                raise RuntimeError("Install aiortc and aiohttp for WebRTC output")
+            
+            logger.info(f"Initializing WebRTC output on port {self.output_webrtc}")
+            self.writer = WebRTCWriter(
+                port=self.output_webrtc,
+                width=self.frame_width,
+                height=self.frame_height,
+                fps=self.frame_fps
+            )
+            return
+        
+        logger.info(f"Initializing writer: {self.frame_width}x{self.frame_height} @ {self.frame_fps}fps (Format: {self.output_format})")
         
         if self.output_format == 'hls':
-            self.writer = HLSWriter(self.output_rtsp, width, height, fps, self.id3_interval)
+            self.writer = HLSWriter(self.output_rtsp, self.frame_width, self.frame_height, self.frame_fps, self.id3_interval)
             return
 
         if self.mode == 'id3':
-            self.writer = ID3RTSPWriter(self.output_rtsp, width, height, fps, self.id3_interval)
+            self.writer = ID3RTSPWriter(self.output_rtsp, self.frame_width, self.frame_height, self.frame_fps, self.id3_interval)
         elif self.mode == 'basic':
             self.writer = BasicRTSPWriter(self.output_rtsp, width, height, fps)
         elif self.mode == 'auto':

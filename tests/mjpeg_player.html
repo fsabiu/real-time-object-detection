@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Drone Detector - MJPEG Stream</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #00d9ff;
+            margin-bottom: 20px;
+        }
+
+        #main {
+            display: flex;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        #video-container {
+            flex: 2;
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        #stream {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        #telemetry {
+            flex: 1;
+            background: #2a2a3e;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 300px;
+        }
+
+        .metric {
+            background: #3a3a4e;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 6px;
+            border-left: 3px solid #00d9ff;
+        }
+
+        .metric-label {
+            font-size: 0.8em;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .detection {
+            background: #4a4a5e;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            border-left: 3px solid #ff6b6b;
+        }
+
+        #status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+
+        .connected {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        .disconnected {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border: 1px solid #ff6b6b;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="status" class="disconnected">● Disconnected</div>
+    <h1>🚁 Drone Detector - MJPEG Stream</h1>
+
+    <div id="main">
+        <div id="video-container">
+            <img id="stream" src="/stream" alt="Video Stream">
+            <canvas id="overlay"></canvas>
+        </div>
+
+        <div id="telemetry">
+            <h2 style="color: #00d9ff; margin-bottom: 15px;">📡 Telemetry</h2>
+            <div class="metric">
+                <div class="metric-label">Frame</div>
+                <div class="metric-value" id="frame">---</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Objects</div>
+                <div class="metric-value" id="count" style="color: #00ff88;">0</div>
+            </div>
+            <div id="detections"></div>
+        </div>
+    </div>
+
+    <script>
+        const streamImg = document.getElementById('stream');
+        const overlay = document.getElementById('overlay');
+        const ctx = overlay.getContext('2d');
+        const statusEl = document.getElementById('status');
+        const frameEl = document.getElementById('frame');
+        const countEl = document.getElementById('count');
+        const detectionsEl = document.getElementById('detections');
+
+        let currentMetadata = null;
+
+        // Update overlay canvas size to match image
+        streamImg.onload = function () {
+            overlay.width = streamImg.width;
+            overlay.height = streamImg.height;
+            if (currentMetadata) drawDetections(currentMetadata);
+        };
+
+        // Connect to SSE for metadata
+        const eventSource = new EventSource('/metadata');
+
+        eventSource.onopen = () => {
+            console.log('SSE connected');
+            statusEl.className = 'connected';
+            statusEl.textContent = '● Connected';
+        };
+
+        eventSource.onmessage = (event) => {
+            try {
+                const metadata = JSON.parse(event.data);
+                currentMetadata = metadata;
+                updateTelemetry(metadata);
+                drawDetections(metadata);
+            } catch (e) {
+                console.error('Error parsing metadata:', e);
+            }
+        };
+
+        eventSource.onerror = () => {
+            console.log('SSE disconnected');
+            statusEl.className = 'disconnected';
+            statusEl.textContent = '● Disconnected';
+        };
+
+        function drawDetections(metadata) {
+            if (!metadata.detections || metadata.detections.length === 0) {
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+                return;
+            }
+
+            ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+            const scaleX = overlay.width / 640;
+            const scaleY = overlay.height / 480;
+
+            metadata.detections.forEach(det => {
+                if (!det.bbox) return;
+
+                const [x1, y1, x2, y2] = det.bbox;
+                const sx1 = x1 * scaleX;
+                const sy1 = y1 * scaleY;
+                const sx2 = x2 * scaleX;
+                const sy2 = y2 * scaleY;
+
+                // Draw box
+                ctx.strokeStyle = '#00ff88';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+
+                // Draw label
+                const label = `${det.class_name} ${(det.confidence * 100).toFixed(0)}%`;
+                ctx.fillStyle = 'rgba(0, 255, 136, 0.8)';
+                ctx.font = '14px Arial';
+                const textWidth = ctx.measureText(label).width;
+                ctx.fillRect(sx1, sy1 - 22, textWidth + 10, 22);
+                ctx.fillStyle = '#000';
+                ctx.fillText(label, sx1 + 5, sy1 - 6);
+            });
+        }
+
+        function updateTelemetry(metadata) {
+            frameEl.textContent = metadata.frame || 'N/A';
+            countEl.textContent = metadata.detection_count || 0;
+
+            detectionsEl.innerHTML = '';
+            if (metadata.detections && metadata.detections.length > 0) {
+                metadata.detections.forEach(det => {
+                    const div = document.createElement('div');
+                    div.className = 'detection';
+                    div.innerHTML = `<strong>${det.class_name}</strong> ${(det.confidence * 100).toFixed(0)}%`;
+                    detectionsEl.appendChild(div);
+                });
+            }
+        }
+    </script>
+</body>
+
+</html>

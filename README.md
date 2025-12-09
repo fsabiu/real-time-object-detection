@@ -220,6 +220,25 @@ python3 -m src.main \
 ```
 This will create `index.m3u8` and `.ts` segments in the specified directory, with ID3 tags injected.
 
+### WebRTC Output Mode (Recommended for Metadata)
+WebRTC provides frame-synchronized metadata via data channels. This is the **recommended method** for real-time telemetry display:
+
+```bash
+python3 -m src.main \
+  --input-srt 'srt://localhost:5001?mode=listener' \
+  --output-webrtc 8080 \
+  --model yolov8n.pt
+```
+
+This starts a WebRTC signaling server on port 8080. Open `tests/webrtc_player.html` in a browser to connect.
+
+**Features:**
+- Per-frame metadata delivery via data channel
+- Low latency video streaming
+- No external RTSP/HLS server required
+- Built-in telemetry display in test page
+
+
 ## Architecture
 
 The application is structured as a Python package:
@@ -247,3 +266,29 @@ Ensure MediaMTX is running to accept RTSP output:
 ```bash
 mediamtx
 ```
+
+---
+
+## HLS ID3 Metadata Testing Summary
+
+Multiple approaches were tested to embed per-frame metadata in HLS streams for synchronized playback in the browser. **All approaches failed** due to GStreamer `mpegtsmux` limitations.
+
+### Approach 1: ID3v2 Tags with `application/x-id3` caps
+- **Attempt**: Created `create_id3v2_frame()` to generate valid ID3v2.4 TXXX frames containing JSON metadata
+- **Result**: ❌ `mpegtsmux` rejected the caps with "not-negotiated" errors
+- **Reason**: GStreamer's `mpegtsmux` does not support `application/x-id3` or `private/x-timed_id3` sink pad capabilities
+
+### Approach 2: KLV Metadata Stream with `meta/x-klv` caps
+- **Attempt**: Changed `meta_appsrc` to use `meta/x-klv, parsed=(boolean)true` caps and pushed raw JSON
+- **Result**: ⚠️ Partial. Stream created with `KLVA` header visible in segments, but JSON content not found by frontend parser
+- **Reason**: The KLV stream appeared in `ffprobe` output, but `hls.js` cannot natively parse KLV data
+
+### Approach 3: Custom Segment Fetcher (Frontend)
+- **Attempt**: JavaScript polling of HLS playlist + fetching `.ts` segments directly + parsing embedded JSON
+- **Result**: ❌ Segments fetched successfully but `parseMetadataFromSegment()` found no JSON
+- **Diagnosis**: Even `strings` command on segments showed `KLVA` header but no JSON payload
+
+### Conclusion
+GStreamer's `mpegtsmux` (v1.20+) does not provide a reliable mechanism for injecting arbitrary metadata (ID3 or KLV) that can be extracted by browser-based players like `hls.js`. 
+
+**Recommended Alternative**: WebRTC with data channels (see `--output-webrtc` option).

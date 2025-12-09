@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--input-srt', type=str, required=True, help='Input SRT URL (e.g., srt://host:port)')
     parser.add_argument('--output-rtsp', type=str, default='rtsp://localhost:8554/detected_stream', help='Output RTSP URL (MediaMTX will convert to HLS)')
     parser.add_argument('--output-format', type=str, default='rtsp', choices=['rtsp', 'hls'], help='Output format: rtsp (stream) or hls (files)')
-    parser.add_argument('--model', type=str, default='yolov8n.pt', help='Path to YOLO model')
+    parser.add_argument('--model', type=str, default='models/yolov8n.pt', help='Path to YOLO model')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
     parser.add_argument('--device', type=str, default='auto', help='Device to run inference on (auto, cpu, 0, 1, …)')
     parser.add_argument('--classes', type=int, nargs='+', default=None, help='List of class IDs to detect')
@@ -39,6 +39,8 @@ def main():
     parser.add_argument('--detections-dir', type=str, default=None, help='Directory to save detection logs (JSON and optional images)')
     parser.add_argument('--detection-log-interval', type=float, default=5.0, help='Interval in seconds to save detection logs')
     parser.add_argument('--save-detection-images', action='store_true', help='Save cropped images of detected objects')
+    parser.add_argument('--output-webrtc', type=int, default=None, help='Start WebRTC signaling server on this port (e.g., 8080)')
+    parser.add_argument('--output-mjpeg', type=int, default=None, help='Start MJPEG+SSE server on this port (e.g., 8080)')
     
     # TAK Server arguments
     parser.add_argument('--tak-enable', action='store_true', help='Enable TAK Server CoT message sending')
@@ -100,7 +102,9 @@ def main():
             save_detection_images=args.save_detection_images,
             tak_sender=tak_sender,
             mode=args.mode,
-            output_format=args.output_format
+            output_format=args.output_format,
+            output_webrtc=args.output_webrtc,
+            output_mjpeg=args.output_mjpeg
         )
         pipeline.run()
     except Exception as e:

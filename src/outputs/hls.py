@@ -3,9 +3,57 @@ import logging
 import time
 import json
 import os
+import struct
 from .rtsp import RTSPWriter, _try_import_gi
 
 logger = logging.getLogger("SRTYOLOUnified.HLS")
+
+def create_id3v2_frame(json_data: str) -> bytes:
+    """
+    Create an ID3v2.4 tag with a TXXX frame containing the JSON data.
+    This format is recognized by hls.js and other HLS players.
+    """
+    # TXXX frame:
+    # - Frame ID: "TXXX" (4 bytes)
+    # - Size: syncsafe integer (4 bytes)
+    # - Flags: 0x0000 (2 bytes)
+    # - Encoding: 0x03 = UTF-8 (1 byte)
+    # - Description: null-terminated string
+    # - Value: the JSON data
+    
+    description = b"detector_metadata\x00"
+    value = json_data.encode('utf-8')
+    frame_content = b'\x03' + description + value  # 0x03 = UTF-8 encoding
+    
+    frame_size = len(frame_content)
+    # Syncsafe integer for frame size (ID3v2.4)
+    syncsafe_frame_size = (
+        ((frame_size >> 21) & 0x7F) << 24 |
+        ((frame_size >> 14) & 0x7F) << 16 |
+        ((frame_size >> 7) & 0x7F) << 8 |
+        (frame_size & 0x7F)
+    )
+    
+    frame = b'TXXX' + struct.pack('>I', syncsafe_frame_size) + b'\x00\x00' + frame_content
+    
+    # ID3v2.4 header:
+    # - "ID3" (3 bytes)
+    # - Version: 0x04 0x00 (2 bytes) = ID3v2.4
+    # - Flags: 0x00 (1 byte)
+    # - Size: syncsafe integer (4 bytes)
+    
+    tag_size = len(frame)
+    syncsafe_tag_size = (
+        ((tag_size >> 21) & 0x7F) << 24 |
+        ((tag_size >> 14) & 0x7F) << 16 |
+        ((tag_size >> 7) & 0x7F) << 8 |
+        (tag_size & 0x7F)
+    )
+    
+    header = b'ID3\x04\x00\x00' + struct.pack('>I', syncsafe_tag_size)
+    
+    return header + frame
+
 
 class HLSWriter(RTSPWriter):
     def __init__(self, output_dir, width, height, fps, id3_interval=30):
@@ -84,7 +132,17 @@ class HLSWriter(RTSPWriter):
         hlssink.set_property("max-files", 5) # Keep last 5 segments
         hlssink.set_property("playlist-length", 3)
         
-        for e in [appsrc, videoconvert, capsfilter, videoscale, input_queue, encoder_queue, x264enc, h264parse, output_queue, mpegtsmux, hlssink]:
+        # KLV Metadata Source - using meta/x-klv caps
+        # Note: mpegtsmux doesn't support ID3 caps directly, but KLV works
+        meta_appsrc = Gst.ElementFactory.make("appsrc", "meta_source")
+        meta_appsrc.set_property("format", Gst.Format.TIME)
+        meta_appsrc.set_property("is-live", True)
+        meta_appsrc.set_property("do-timestamp", True)
+        # meta/x-klv creates a data stream in MPEG-TS that can be parsed by the player
+        meta_caps = Gst.Caps.from_string("meta/x-klv, parsed=(boolean)true") 
+        meta_appsrc.set_property("caps", meta_caps)
+
+        for e in [appsrc, videoconvert, capsfilter, videoscale, input_queue, encoder_queue, x264enc, h264parse, output_queue, mpegtsmux, hlssink, meta_appsrc]:
             if not e:
                 raise RuntimeError(f"Failed to create GStreamer element: {e}")
             pipeline.add(e)
@@ -98,19 +156,23 @@ class HLSWriter(RTSPWriter):
         x264enc.link(h264parse)
         h264parse.link(output_queue)
         output_queue.link(mpegtsmux)
+        
+        # Link metadata source to mpegtsmux
+        meta_appsrc.link(mpegtsmux)
+        
         mpegtsmux.link(hlssink)
 
         pipeline.set_state(Gst.State.PLAYING)
 
         self.pipeline = pipeline
         self.appsrc = appsrc
+        self.meta_appsrc = meta_appsrc
         self.mpegtsmux = mpegtsmux
         self.frame_duration = int(self.Gst.SECOND / self.fps)
         self.gst_timestamp = 0
-        logger.info(f"HLS pipeline started. Output: {self.output_dir}")
+        logger.info(f"HLS pipeline started with ID3 metadata. Output: {self.output_dir}")
 
     def write_frame(self, frame):
-        # Reuse RTSPWriter logic
         # Check for bus messages
         bus = self.pipeline.get_bus()
         while True:
@@ -138,44 +200,44 @@ class HLSWriter(RTSPWriter):
             logger.warning(f"Error pushing buffer: {ret}")
 
     def inject_metadata(self, metadata):
-        # Reuse ID3 injection logic (same as ID3RTSPWriter)
-        if self.frame_count % max(1, self.id3_interval) != 0:
+        # Log every call to trace the issue
+        should_inject = (self.frame_count % max(1, self.id3_interval) == 0)
+        
+        if not should_inject:
             return
+        
         try:
-            taglist = self.Gst.TagList.new_empty()
-            telemetry = metadata.get('telemetry', {})
-            if 'latitude' in telemetry and 'longitude' in telemetry:
-                gps_string = f"{telemetry['latitude']:.7f},{telemetry['longitude']:.7f}"
-                taglist.add_value(self.Gst.TagMergeMode.APPEND, 'geo-location-name', gps_string)
-                taglist.add_value(self.Gst.TagMergeMode.APPEND, 'geo-location-latitude', telemetry['latitude'])
-                taglist.add_value(self.Gst.TagMergeMode.APPEND, 'geo-location-longitude', telemetry['longitude'])
-            if 'altitude' in telemetry:
-                taglist.add_value(self.Gst.TagMergeMode.APPEND, 'geo-location-elevation', telemetry['altitude'])
-            if 'detection_count' in metadata:
-                taglist.add_value(self.Gst.TagMergeMode.APPEND, 'comment', f"Detections: {metadata['detection_count']}")
-            taglist.add_value(self.Gst.TagMergeMode.APPEND, 'extended-comment', json.dumps(metadata, separators=(',', ':')))
-            event = self.Gst.Event.new_tag(taglist)
+            # Create JSON payload - push raw JSON to KLV stream
+            json_str = json.dumps(metadata, separators=(',', ':'))
+            data = json_str.encode('utf-8')
             
-            # Send tag event to mpegtsmux sink pad
-            sink_pad = self.mpegtsmux.get_static_pad("sink_0")
-            if not sink_pad:
-                 sink_pad = self.mpegtsmux.iterate_sink_pads().next()[1]
+            # Create buffer
+            buf = self.Gst.Buffer.new_allocate(None, len(data), None)
+            buf.fill(0, data)
             
-            if sink_pad:
-                ret = sink_pad.send_event(event)
-                if not ret:
-                    logger.warning("Failed to send ID3 tag event to sink pad")
+            # Sync timestamp with video  
+            buf.pts = self.gst_timestamp
+            buf.duration = self.frame_duration
+            
+            # Push to metadata appsrc
+            ret = self.meta_appsrc.emit("push-buffer", buf)
+            if ret != self.Gst.FlowReturn.OK:
+                logger.warning(f"Error pushing KLV metadata buffer: {ret}")
             else:
-                ret = self.mpegtsmux.send_event(event)
-                if not ret:
-                    logger.warning("Failed to send ID3 tag event to mpegtsmux")
+                logger.info(f"KLV Metadata injected: frame={metadata.get('frame', '?')}, size={len(data)}B, pts={buf.pts}")
+                
         except Exception as e:
-            logger.error(f"Error injecting MPEG-TS metadata: {e}")
+            logger.error(f"Error injecting KLV metadata: {e}")
 
     def close(self):
         if self.appsrc:
             try:
                 self.appsrc.emit("end-of-stream")
+            except Exception:
+                pass
+        if self.meta_appsrc:
+            try:
+                self.meta_appsrc.emit("end-of-stream")
             except Exception:
                 pass
         if self.pipeline:

@@ -7,3 +7,5 @@ tensorrt
 onnx
 onnxsim
 pygobject
+aiortc
+aiohttp
