@@ -200,11 +200,15 @@ class ThreadedPipeline:
                             # Rate limiting for real-time playback simulation (optional)
                             # time.sleep(1/self.frame_fps)
                     except Exception as e:
-                        # logger.warning(f"Decode error: {e}")
+                        # Decode errors are common, don't spam logs
                         pass
+        except StopIteration:
+            # Normal EOF for file inputs
+            logger.info("Input stream ended")
         except Exception as e:
             if not self.stop_event.is_set():
                 logger.error(f"Capture thread error: {e}")
+        finally:
             self.stop_event.set()
 
     def _inference_thread(self):
@@ -391,7 +395,7 @@ class ThreadedPipeline:
         if self.mode == 'id3':
             self.writer = ID3RTSPWriter(self.output_rtsp, self.frame_width, self.frame_height, self.frame_fps, self.id3_interval)
         elif self.mode == 'basic':
-            self.writer = BasicRTSPWriter(self.output_rtsp, width, height, fps)
+            self.writer = BasicRTSPWriter(self.output_rtsp, self.frame_width, self.frame_height, self.frame_fps)
         elif self.mode == 'auto':
             available, _, _, _ = _try_import_gi()
             if available:

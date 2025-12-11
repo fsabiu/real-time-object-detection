@@ -28,7 +28,7 @@ cd /home/ubuntu/drones/detector
 /home/ubuntu/miniforge/envs/drone_detector/bin/python -m src.main \
   --input-srt 'rtsp://localhost:8554/klvstream' \
   --output-rtsp 'rtsp://localhost:8554/detected_stream' \
-  --model yolov8n.pt \
+  --model yolov8l.pt \
   --id3-interval 10 \
   --mode id3
 
