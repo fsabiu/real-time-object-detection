@@ -102,313 +102,126 @@ MediaMTX listens on:
 
 ## Usage
 
-### Basic Mode (Recommended)
+The detector follows a simple pipeline: `Input → Detector → Output(s)`.
 
-Uses pure GStreamer pipeline (appsrc ->
-### 2. Batch Processing Mode
-Process video file and save annotated video + JSON metadata:
-```bash
-python3 -m src.main \
-  --input-srt ../cala_del_moral.ts \
-  --batch-output ./output \
-  --model models/yolov8n.pt
-  --conf 0.25
-```
+### 1. Inputs (`--input-srt`)
 
-Output files are named after the input file (e.g., `cala_del_moral.mp4`, `cala_del_moral.json`).
+The `--input-srt` argument accepts two types of sources:
 
----
+| Input Type | Description | Example |
+| :--- | :--- | :--- |
+| **Video File** | Use a local file path. The detector reads it directly (fastest). | `--input-srt ../video.ts` |
+| **Network Stream** | Any URL supported by PyAV/FFmpeg (RTSP, SRT, UDP, etc.). | `--input-srt srt://127.0.0.1:9000`<br>`--input-srt rtsp://camera:554/live` |
 
-## Usage Guide
+### 2. Output Modes
 
-### Mode 1: RTSP Streaming (Real-Time)
+You can enable one or multiple outputs simultaneously.
 
-Stream annotated video with detections in real-time.
-
-#### Example 1: Stream from File
-
-**Terminal 1 - Stream video file**:
-```bash
-ffmpeg -re -stream_loop -1 \
-  -i ../cala_del_moral.ts \
-  -c copy \
-  -f rtsp rtsp://127.0.0.1:8554/source
-```
-
-**Terminal 2 - Run detector**:
-```bash
-python3 -m src.main \
-  --input-srt rtsp://127.0.0.1:8554/source \
-  --output-rtsp rtsp://127.0.0.1:8554/detected \
-  --model models/yolov8n.pt \
-  --conf 0.25
-```
-
-**Terminal 3 - View output**:
-```bash
-ffplay rtsp://127.0.0.1:8554/detected
-```
-
-#### Example 2: Stream from Parrot Forwarder (Real-Time)
-
-```bash
-python3 -m src.main \
-  --input-srt srt://parrot-forwarder-ip:8900 \
-  --output-rtsp rtsp://127.0.0.1:8554/detected \
-  --model models/yolov8n.pt \
-  --conf 0.3 \
-  --skip-frames 2
-```
-
-**Features**:
-- Annotated video stream with bounding boxes
-- Class labels and confidence scores displayed
-- Low latency (<100ms typical)
-- Compatible with MediaMTX for HLS conversion
-
----
-
-### Mode 2: Batch Processing
-
-Process a video file and save annotated output + complete metadata.
-
-#### Example: Process Video File Directly
+#### A. RTSP Streaming (Default)
+Streams the annotated video to an external RTSP server (like MediaMTX).
+- **Flag**: `--output-rtsp <url>`
+- **Test Player**: `tests/test_rtsp_streaming.sh` (wraps `ffplay`)
+- **Latency**: Low (<200ms)
 
 ```bash
 python3 -m src.main \
   --input-srt ../cala_del_moral.ts \
-  --batch-output ./batch_output \
-  --model models/yolov8n.pt \
-  --conf 0.25
+  --output-rtsp rtsp://localhost:8554/detected \
+  --mode basic
 ```
 
-**Output Files** (named after input file):
-```
-batch_output/
-├── cala_del_moral.mp4     # Annotated video
-└── cala_del_moral.json    # Frame metadata
+#### B. Batch Processing (File Output)
+Processes a video file as fast as possible, saving an MP4 and JSON metadata file.
+- **Flag**: `--batch-output <directory>`
+- **Test Player**: `tests/test_batch_processing.sh` (checks output files)
+- **Features**: Preserves FPS, H.264 compression, syncs metadata.
+
+```bash
+python3 -m src.main \
+  --input-srt ../cala_del_moral.ts \
+  --batch-output ./output
 ```
 
-**Key Features**:
-- Output files named after input to prevent overwriting
-- Preserves original FPS (no speed-up or slow-down)
-- Complete frame-by-frame metadata in JSON
+#### C. WebRTC (Browser Streaming)
+Streams video + metadata directly to a browser via WebRTC. Best for real-time dashboards.
+- **Flag**: `--output-webrtc <port>`
+- **Test Player**: `tests/webrtc_player.html`
+- **Features**: Ultra-low latency, data channels for JSON metadata.
 
-**JSON Metadata Structure**:
-```json
-{
-  "video_info": {
-    "width": 1920,
-    "height": 1080,
-    "fps": 30.0,
-    "output_file": "output.mp4"
-  },
-  "frames": [
-    {
-      "frame": 0,
-      "timestamp": "2025-12-09T10:00:00",
-      "detection_count": 3,
-      "detections": [
-        {
-          "class_name": "person",
-          "confidence": 0.95,
-          "bbox": [100, 200, 300, 400],
-          "track_id": 1
-        }
-      ],
-      "telemetry": {
-        "lat": 37.7749,
-        "lon": -122.4194,
-        "alt": 50.5
-      }
-    }
-  ]
-}
+```bash
+python3 -m src.main \
+  --input-srt rtsp://camera_url \
+  --output-webrtc 8080
+```
+> **View**: Open `tests/webrtc_player.html` in your browser.
+
+#### D. MJPEG (Browser Fallback)
+Simple HTTP stream. Good for older browsers or simple debugging.
+- **Flag**: `--output-mjpeg <port>`
+- **Test Player**: `tests/mjpeg_player.html`
+- **Features**: Simple HTTP GET `/stream`, SSE for metadata at `/events`.
+
+```bash
+python3 -m src.main \
+  --input-srt ../cala_del_moral.ts \
+  --output-mjpeg 8081
+```
+> **View**: Open `tests/mjpeg_player.html` in your browser.
+
+#### E. HLS (HTTP Live Streaming)
+Generates `.m3u8` playlists and `.ts` segments.
+- **Flag**: `--output-format hls` + `--output-rtsp <directory>`
+- **Test Player**: `tests/hls_player.html`
+
+```bash
+python3 -m src.main \
+  --input-srt ../cala_del_moral.ts \
+  --output-rtsp ./hls_output \
+  --output-format hls
 ```
 
 ---
 
-## Test Scripts
+## Quick Reference Table
 
-### Test RTSP Streaming
-```bash
-./tests/test_rtsp_streaming.sh
-```
-Streams `cala_del_moral.ts` and outputs to RTSP.
-
-### Test Batch Processing
-```bash
-./tests/test_batch_processing.sh
-```
-Processes `cala_del_moral.ts` and saves to `batch_output_test/`.
+| Mode | Argument | Sample Player / Tool |
+| :--- | :--- | :--- |
+| **RTSP** | `--output-rtsp <url>` | `ffplay` / VLC / `tests/test_rtsp_streaming.sh` |
+| **Batch** | `--batch-output <dir>` | System Video Player / `tests/test_batch_processing.sh` |
+| **WebRTC** | `--output-webrtc <port>` | `tests/webrtc_player.html` |
+| **MJPEG** | `--output-mjpeg <port>` | `tests/mjpeg_player.html` |
+| **HLS** | `--output-format hls` | `tests/hls_player.html` |
 
 ---
 
-## Installationam to `rtsp://localhost:8554/detected_stream`
-
-### Viewing the Output
-
-**VLC (low latency):**
-```bash
-vlc --network-caching=100 rtsp://localhost:8554/detected_stream
-```
-
-**Browser (WebRTC):**
-```
-http://localhost:8889/detected_stream
-```
-
-## Performance
-
-**Architecture**: 3-thread pipeline (Capture -> Inference -> Output)
-
-**Typical Latency** (measured end-to-end):
-- **Light load** (0-5 detections): 11-14ms
-- **Medium load** (10-15 detections): 15-18ms  
-- **Heavy load** (20-30 detections): 20-24ms
-- **Max observed**: 33.4ms (rare spikes with 30+ objects)
-
-**Breakdown**:
-- Inference (YOLO): 7-17ms (scales with detection count)
-- Drawing/Overlay: 1-3ms
-- GStreamer Write: **1.4ms** (pure GStreamer, no IPC overhead)
-
-**Target**: <33ms for 30 FPS (achieved ✅)
-
-## Architecture
-
-```
-Input (SRT/RTSP)
-    ↓
-[Capture Thread] → Queue(2) → [Inference Thread] → Queue(2) → [Output Thread]
-                                   (YOLO)                         (Draw + GStreamer)
-                                                                         ↓
-                                                                   RTSP Output
-```
-
-**Key Optimizations**:
-1. **Leaky queues** (maxsize=2): Drop old frames instead of buffering
-2. **Native GStreamer**: No subprocess/pickle overhead
-3. **x264enc tune=zerolatency**: Minimal encoding delay
-4. **Vectorized drawing**: NumPy operations for bounding boxes
-
-## Troubleshooting
-
-### "rtspclientsink not available"
-
-If you see this error, the GStreamer plugin path isn't set correctly:
-
-```bash
-# Verify rtspclientsink exists
-ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstrtspclientsink.so
-
-# Test it manually
-conda run -n drone_detector python -c "
-import os
-os.environ['GST_PLUGIN_PATH'] = '/usr/lib/x86_64-linux-gnu/gstreamer-1.0'
-import gi
-gi.require_version('Gst', '1.0')
-from gi.repository import Gst
-Gst.init(None)
-print('rtspclientsink:', Gst.ElementFactory.make('rtspclientsink'))
-"
-```
-
-### High Latency / Buffering
-
-1. **Check inference time**: Look for log lines like `Frame X: Total=Yms | Inf=Zms`
-2. **Reduce detection load**: Increase `--conf-threshold` (default 0.25)
-3. **Lower VLC buffer**: Use `--network-caching=50` (50ms)
-
-### Arguments
--   `--input-srt`: Input SRT URL or RTSP URL.
--   `--output-rtsp`: Output RTSP URL (for `rtsp` format) or Output Directory (for `hls` format).
--   `--output-format`: Output format: `rtsp` (default) or `hls`.
--   `--model`: Path to YOLO model.
--   `--conf`: Confidence threshold (default: 0.25).
--   `--device`: Device to run inference on (auto, cpu, 0, 1...).
--   `--mode`: Pipeline mode (`auto`, `id3`, `basic`). Use `basic` if pygobject is not installed.
-
-### HLS Output Mode
-To generate HLS segments directly (bypassing MediaMTX):
-```bash
-python3 -m src.main \
-  --input-srt 'rtsp://localhost:8554/klvstream' \
-  --output-rtsp '/path/to/hls_output_dir' \
-  --output-format hls \
-  --mode id3
-```
-This will create `index.m3u8` and `.ts` segments in the specified directory, with ID3 tags injected.
-
-### WebRTC Output Mode (Recommended for Metadata)
-WebRTC provides frame-synchronized metadata via data channels. This is the **recommended method** for real-time telemetry display:
-
-```bash
-python3 -m src.main \
-  --input-srt 'srt://localhost:5001?mode=listener' \
-  --output-webrtc 8080 \
-  --model yolov8n.pt
-```
-
-This starts a WebRTC signaling server on port 8080. Open `tests/webrtc_player.html` in a browser to connect.
-
-**Features:**
-- Per-frame metadata delivery via data channel
-- Low latency video streaming
-- No external RTSP/HLS server required
-- Built-in telemetry display in test page
-
-
-## Architecture
+## Architecture details
 
 The application is structured as a Python package:
 -   `src/main.py`: Entry point.
 -   `src/core/pipeline.py`: Threaded pipeline logic.
 -   `src/modules/`: Helper modules (KLV, TAK, Geo, Drawing, SSE).
--   `src/outputs/`: Output writers (RTSP/GStreamer).
+-   `src/outputs/`: Output writers (RTSP/GStreamer, Batch, WebRTC, MJPEG).
 
 ## Performance
 
 The pipeline uses three dedicated threads:
 1.  **Capture Thread**: Decodes video and KLV data.
 2.  **Inference Thread**: Runs YOLO tracking.
-3.  **Output Thread**: Draws overlays and writes to RTSP.
-
-Queues between threads are size-limited to prevent latency buildup. If the pipeline cannot keep up, it will drop frames (preserving the most recent ones) rather than introducing lag.
+3.  **Output Thread**: Draws overlays and writes to selected output(s).
 
 ## Troubleshooting
 
-### pygobject Installation Issues
-If you encounter issues installing `pygobject`, the ID3 mode won't be available. Use `--mode basic` instead, which works without pygobject.
+### "rtspclientsink not available"
+If you see this error, the GStreamer plugin path isn't set correctly. Ensure you installed the system dependencies.
 
-### MediaMTX Not Running
-Ensure MediaMTX is running to accept RTSP output:
-```bash
-mediamtx
-```
+### Arguments
+full list:
+-   `--input-srt`: Input source (File path or URL).
+-   `--output-rtsp`: RTSP Destination URL.
+-   `--batch-output`: Directory for batch file output.
+-   `--output-webrtc`: Port for WebRTC server.
+-   `--output-mjpeg`: Port for MJPEG server.
+-   `--model`: Path to YOLO model.
+-   `--conf`: Confidence threshold (default: 0.25).
+-   `--mode`: `basic` (recommended for RTSP), `id3` (experimental).
 
----
-
-## HLS ID3 Metadata Testing Summary
-
-Multiple approaches were tested to embed per-frame metadata in HLS streams for synchronized playback in the browser. **All approaches failed** due to GStreamer `mpegtsmux` limitations.
-
-### Approach 1: ID3v2 Tags with `application/x-id3` caps
-- **Attempt**: Created `create_id3v2_frame()` to generate valid ID3v2.4 TXXX frames containing JSON metadata
-- **Result**: ❌ `mpegtsmux` rejected the caps with "not-negotiated" errors
-- **Reason**: GStreamer's `mpegtsmux` does not support `application/x-id3` or `private/x-timed_id3` sink pad capabilities
-
-### Approach 2: KLV Metadata Stream with `meta/x-klv` caps
-- **Attempt**: Changed `meta_appsrc` to use `meta/x-klv, parsed=(boolean)true` caps and pushed raw JSON
-- **Result**: ⚠️ Partial. Stream created with `KLVA` header visible in segments, but JSON content not found by frontend parser
-- **Reason**: The KLV stream appeared in `ffprobe` output, but `hls.js` cannot natively parse KLV data
-
-### Approach 3: Custom Segment Fetcher (Frontend)
-- **Attempt**: JavaScript polling of HLS playlist + fetching `.ts` segments directly + parsing embedded JSON
-- **Result**: ❌ Segments fetched successfully but `parseMetadataFromSegment()` found no JSON
-- **Diagnosis**: Even `strings` command on segments showed `KLVA` header but no JSON payload
-
-### Conclusion
-GStreamer's `mpegtsmux` (v1.20+) does not provide a reliable mechanism for injecting arbitrary metadata (ID3 or KLV) that can be extracted by browser-based players like `hls.js`. 
-
-**Recommended Alternative**: WebRTC with data channels (see `--output-webrtc` option).

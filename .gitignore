@@ -2,3 +2,4 @@ logs/*
 output/*
 *.mp4
 *.pt
+mock/*
