@@ -118,68 +118,77 @@ The `--input-srt` argument accepts two types of sources:
 You can enable one or multiple outputs simultaneously.
 
 #### A. RTSP Streaming (Default)
-Streams the annotated video to an external RTSP server (like MediaMTX).
-- **Flag**: `--output-rtsp <url>`
-- **Test Player**: `tests/test_rtsp_streaming.sh` (wraps `ffplay`)
-- **Latency**: Low (<200ms)
-
-```bash
-python3 -m src.main \
-  --input-srt ../cala_del_moral.ts \
-  --output-rtsp rtsp://localhost:8554/detected \
-  --mode basic
-```
+Streams the annotated video to an external RTSP server.
+- **Backend (Run)**:
+  ```bash
+  python3 -m src.main --input-srt ../cala_del_moral.ts --output-rtsp rtsp://localhost:8554/detected --mode basic
+  ```
+- **Frontend (View)**:
+  ```bash
+  ffplay rtsp://localhost:8554/detected
+  # or use the test script:
+  ./tests/test_rtsp_streaming.sh
+  ```
 
 #### B. Batch Processing (File Output)
-Processes a video file as fast as possible, saving an MP4 and JSON metadata file.
-- **Flag**: `--batch-output <directory>`
-- **Test Player**: `tests/test_batch_processing.sh` (checks output files)
-- **Features**: Preserves FPS, H.264 compression, syncs metadata.
-
-```bash
-python3 -m src.main \
-  --input-srt ../cala_del_moral.ts \
-  --batch-output ./output
-```
+Processes the video and saves results to a folder.
+- **Backend (Run)**:
+  ```bash
+  python3 -m src.main --input-srt ../cala_del_moral.ts --batch-output ./batch_output
+  ```
+- **Frontend (View)**:
+  ```bash
+  # Results will be in the output folder
+  ls -lh ./batch_output/
+  # Or run verification script:
+  ./tests/test_batch_processing.sh
+  ```
 
 #### C. WebRTC (Browser Streaming)
-Streams video + metadata directly to a browser via WebRTC. Best for real-time dashboards.
-- **Flag**: `--output-webrtc <port>`
-- **Test Player**: `tests/webrtc_player.html`
-- **Features**: Ultra-low latency, data channels for JSON metadata.
-
-```bash
-python3 -m src.main \
-  --input-srt rtsp://camera_url \
-  --output-webrtc 8080
-```
-> **View**: Open `tests/webrtc_player.html` in your browser.
+Streams video + metadata directly to a browser.
+- **Backend (Run)**:
+  ```bash
+  python3 -m src.main --input-srt ../cala_del_moral.ts --output-webrtc 8080
+  ```
+- **Frontend (View)**:
+  Open [tests/webrtc_player.html](file://home/ubuntu/drones/detector/tests/webrtc_player.html) in your browser.
 
 #### D. MJPEG (Browser Fallback)
-Simple HTTP stream. Good for older browsers or simple debugging.
-- **Flag**: `--output-mjpeg <port>`
-- **Test Player**: `tests/mjpeg_player.html`
-- **Features**: Simple HTTP GET `/stream`, SSE for metadata at `/events`.
-
-```bash
-python3 -m src.main \
-  --input-srt ../cala_del_moral.ts \
-  --output-mjpeg 8081
-```
-> **View**: Open `tests/mjpeg_player.html` in your browser.
+Simple HTTP multi-part stream.
+- **Backend (Run)**:
+  ```bash
+  python3 -m src.main --input-srt ../cala_del_moral.ts --output-mjpeg 8081
+  ```
+- **Frontend (View)**:
+  Open [tests/mjpeg_player.html](file://home/ubuntu/drones/detector/tests/mjpeg_player.html) in your browser.
 
 #### E. HLS (HTTP Live Streaming)
-Generates `.m3u8` playlists and `.ts` segments.
-- **Flag**: `--output-format hls` + `--output-rtsp <directory>`
-- **Test Player**: `tests/hls_player.html`
+Generates static HLS segments.
+- **Backend (Run)**:
+  ```bash
+  python3 -m src.main --input-srt ../cala_del_moral.ts --output-rtsp ./hls_output --output-format hls
+  ```
+- **Frontend (View)**:
+  Open [tests/hls_player.html](file://home/ubuntu/drones/detector/tests/hls_player.html) in your browser.
 
+---
+
+### 3. Remote Access & Port Forwarding
+
+If you are running the detector on a **remote server** (e.g., via SSH) and want to view the results on your local machine:
+
+#### A. Built-in Web Servers (WebRTC & MJPEG)
+These modes already serve their player pages on the specified port.
+1. **Run Backend**: `python3 -m src.main ... --output-webrtc 8080`
+2. **Access**: Navigate to `http://<server-ip>:8080/`
+
+#### B. Serving Static Files (HLS & General Tests)
+For HLS or to browse the `tests/` folder, use Python's built-in HTTP server:
 ```bash
-python3 -m src.main \
-  --input-srt ../cala_del_moral.ts \
-  --output-rtsp ./hls_output \
-  --output-format hls
+# To serve the tests folder on port 9000
+python3 -m http.server 9000 --directory tests/
 ```
-
+Then navigate to `http://<server-ip>:9000/`.
 ---
 
 ## Quick Reference Table
